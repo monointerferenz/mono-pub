@@ -1,14 +1,15 @@
-from datetime import date
-from pathlib import Path
+from __future__ import annotations
+
 import subprocess
+from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from rich.markup import escape
 from rich.text import Text
 from slugify import slugify
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Footer, Header, Input, Label, RichLog, Select
+from textual.screen import Screen
+from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 
 from mono_pub.commands.open import build_editor_command
 from mono_pub.config import load_config
@@ -31,8 +32,56 @@ CONTENT_TYPES = (
 )
 
 
+# ── Shared CSS (copied from mono-archive for now; in the future this would be in a common package) ──
+COMMON_CSS = """
+.section-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.action-button {
+    width: 90%;
+    margin-top: 1;
+}
+
+.panel {
+    border: solid $accent;
+    padding: 1;
+    margin-bottom: 1;
+}
+
+.heading-bar {
+    padding: 1 2;
+    border-bottom: solid $accent;
+}
+
+.status-bar {
+    height: auto;
+    padding: 1 2;
+    border-top: solid $accent;
+}
+
+.missing-required {
+    color: $error;
+    text-style: bold;
+}
+
+.success-text {
+    color: $success;
+}
+
+.warning-text {
+    color: $warning;
+}
+
+.dim-text {
+    color: $text-muted;
+}
+"""
+
+
 class MonoPubTuiApp(App):
-    CSS = """
+    CSS = COMMON_CSS + """
     Screen {
         layout: vertical;
     }
@@ -51,14 +100,27 @@ class MonoPubTuiApp(App):
         width: 1fr;
     }
 
-    .panel {
-        border: solid $primary;
+    #overview-panel {
+        border: solid $accent;
         padding: 1;
+        margin-bottom: 1;
+        height: 2fr;
+    }
+
+    #overview-title {
+        text-style: bold;
         margin-bottom: 1;
     }
 
-    .section-title {
-        text-style: bold;
+    #output-area {
+        height: 1fr;
+        border: solid $accent;
+        padding: 1;
+        margin-top: 1;
+    }
+
+    #output-title {
+        text-style: bold dim;
         margin-bottom: 1;
     }
 
@@ -66,12 +128,14 @@ class MonoPubTuiApp(App):
         width: 90%;
         margin-top: 1;
     }
-    #status {
-        height: 1fr;
+
+    #draft-title-input {
+        width: 100%;
+        margin-top: 1;
     }
 
-    #overview {
-        height: 2fr;
+    #content-type-label {
+        margin-top: 1;
     }
     """
 
@@ -81,11 +145,12 @@ class MonoPubTuiApp(App):
     ]
 
     TITLE = "mono-pub"
-    SUB_TITLE = "Textual publishing interface"
 
     def __init__(self):
         super().__init__()
         self.config: dict | None = None
+        self._overview_lines: list[str] = []
+        self._output_lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -93,6 +158,7 @@ class MonoPubTuiApp(App):
             with Vertical(id="sidebar"):
                 with Vertical(classes="panel"):
                     yield Label("Content", classes="section-title")
+                    yield Label("", id="content-type-label")
                     yield Select(CONTENT_TYPES, value="post", id="content-type")
                     yield Input(placeholder="Draft title", id="draft-title")
                     yield Button("Create draft", id="create-draft", variant="primary")
@@ -105,18 +171,55 @@ class MonoPubTuiApp(App):
                     yield Button("Publish No git", id="publish-no-git")
                     yield Button("Dry run preview", id="dry-run")
             with Vertical(id="main"):
-                yield RichLog(id="overview", classes="panel", wrap=True, highlight=True)
-                yield RichLog(id="status", wrap=True, highlight=True)
+                with Vertical(id="overview-panel"):
+                    yield Label("Library overview", id="overview-title")
+                    yield Static("", id="overview-content")
+                with Vertical(id="output-area"):
+                    yield Label("Output", id="output-title")
+                    yield Static("", id="output-content")
         yield Footer()
 
     def on_mount(self):
         self.theme = "gruvbox"
         self.load_configuration()
         self.refresh_summary()
+        self.update_content_type_label()
+
+    def on_select_changed(self, event: Select.Changed):
+        if event.select.id == "content-type":
+            self.update_content_type_label()
+
+    def update_content_type_label(self):
+        label = self.query_one("#content-type-label", Label)
+        value = self.query_one("#content-type", Select).value
+        if value and value != Select.NULL:
+            label.update(f"[dim]Showing {str(value).title()} files[/dim]")
+        else:
+            label.update("")
+
+    def compose_output(self) -> Static:
+        return self.query_one("#output-content", Static)
+
+    def log_output(self, message: str):
+        """Append a styled message to the output area."""
+        self._output_lines.append(message)
+        output = self.compose_output()
+        output.update("\\n".join(self._output_lines))
+        # Auto-scroll to bottom
+        output.scroll_end()
+
+    def clear_output(self):
+        self._output_lines = []
+        self.compose_output().update("")
+
+    def log_overview(self, message: str):
+        self._overview_lines.append(message)
+        self.query_one("#overview-content", Static).update("\\n".join(self._overview_lines))
 
     def action_refresh(self):
         self.load_configuration()
         self.refresh_summary()
+        self.app.notify("Refreshed", severity="success")
 
     def on_button_pressed(self, event: Button.Pressed):
         actions = {
@@ -138,72 +241,75 @@ class MonoPubTuiApp(App):
             self.config = load_config()
         except Exception as error:
             self.config = None
-            self.log_message(f"[red]Configuration error:[/red] {error}")
+            self.app.notify(f"Configuration error: {error}", severity="error")
 
     def refresh_summary(self):
-        overview = self.query_one("#overview", RichLog)
-        overview.clear()
+        self._overview_lines = []
+        self.query_one("#overview-content", Static).update("")
 
         if self.config is None:
-            self.write_log(overview, "Configuration could not be loaded.")
+            self.log_overview("[red]Configuration could not be loaded.[/red]")
             return
 
-        self.write_log(overview, "[b]Library overview[/b]")
+        self.log_overview("[b]Library overview[/b]")
         for content_type in PATH_KEYS_BY_TYPE:
             path_key = PATH_KEYS_BY_TYPE[content_type]
-            self.write_file_group(overview, content_type, "Drafts", "drafts_path", path_key)
-            self.write_file_group(overview, content_type, "Releases", "releases_path", path_key)
+            self.write_file_group(content_type, "Drafts", "drafts_path", path_key)
+            self.write_file_group(content_type, "Releases", "releases_path", path_key)
 
     def write_file_group(
         self,
-        overview: RichLog,
         content_type: str,
         label: str,
         group_key: str,
         path_key: str,
     ):
+        from rich.markup import escape as rich_escape
+
         files = self.markdown_files(group_key, path_key)
-        self.write_log(
-            overview,
-            f"\n[b]{escape(content_type.title())} {escape(label)} ({len(files)})[/b]",
+        self.log_overview(
+            f"\n[b]{rich_escape(content_type.title())} {rich_escape(label)} ({len(files)})[/b]"
         )
 
         if not files:
-            self.write_log(overview, "  [dim]No files[/dim]")
+            self.log_overview("  [dim]No files[/dim]")
             return
 
         for file in files:
-            self.write_log(overview, f"  {escape(file.name)}")
+            self.log_overview(f"  {rich_escape(file.name)}")
 
     def create_draft(self):
         if self.config is None:
-            self.log_message("[red]Cannot create a draft until configuration loads.[/red]")
+            self.app.notify("Cannot create a draft until configuration loads.", severity="error")
             return
 
         content_type = self.selected_content_type()
-        title = self.query_one("#draft-title", Input).value.strip()
+        title_input = self.query_one("#draft-title", Input)
+        title = title_input.value.strip()
 
         if not title:
-            self.log_message("[yellow]Enter a title before creating a draft.[/yellow]")
+            self.app.notify("Enter a title before creating a draft.", severity="warning")
             return
 
         try:
             target = create_draft(self.config, content_type, title)
         except FileExistsError as error:
             path = error.filename or error.args[0]
-            self.log_message(f"[red]Draft already exists:[/red] {path}")
+            self.app.notify(f"Draft already exists: {path}", severity="error")
             return
         except Exception as error:
-            self.log_message(f"[red]Could not create draft:[/red] {error}")
+            self.app.notify(f"Could not create draft: {error}", severity="error")
             return
 
-        self.query_one("#draft-title", Input).value = ""
-        self.log_message(f"[green]Created draft:[/green] {target}")
+        title_input.value = ""
+        self.clear_output()
+        self.log_output(f"[green]Created draft:[/green] {target}")
         self.refresh_summary()
+        self.app.notify(f"Created: {target.name}", severity="success")
 
     def open_selected(self):
         if self.config is None:
-            self.log_message("[red]Cannot open drafts until configuration loads.[/red]")
+            self.app.notify("Cannot open drafts until configuration loads.", severity="error")
             return
 
         content_type = self.selected_content_type()
@@ -211,64 +317,77 @@ class MonoPubTuiApp(App):
         editor_command = self.config.get("editor_command")
 
         if not editor_command:
-            self.log_message("[red]Missing editor_command in configuration.[/red]")
+            self.app.notify("Missing editor_command in configuration.", severity="error")
             return
 
         draft_path = Path(self.config["drafts_path"][path_key])
 
         if not draft_path.exists():
-            self.log_message(f"[red]Draft path does not exist:[/red] {draft_path}")
+            self.app.notify(f"Draft path does not exist: {draft_path}", severity="error")
             return
 
         try:
             command = build_editor_command(editor_command, draft_path)
             subprocess.Popen(command)
         except FileNotFoundError:
-            self.log_message(f"[red]Editor command not found:[/red] {command[0]}")
+            self.app.notify(f"Editor command not found: {command[0]}", severity="error")
             return
         except ValueError as error:
-            self.log_message(f"[red]Could not open drafts:[/red] {error}")
+            self.app.notify(f"Could not open drafts: {error}", severity="error")
             return
 
-        self.log_message(f"[green]Opened drafts:[/green] {draft_path}")
+        self.clear_output()
+        self.log_output(f"[green]Opened drafts:[/green] {draft_path}")
+        self.app.notify(f"Opened: {draft_path}", severity="success")
 
     def release_selected(self):
         if self.config is None:
-            self.log_message("[red]Cannot release until configuration loads.[/red]")
+            self.app.notify("Cannot release until configuration loads.", severity="error")
             return
 
+        self.clear_output()
         content_type = self.selected_content_type()
+        self.log_output(f"[b]Releasing {content_type} drafts...[/b]")
 
         try:
             released = release_type(self.config, content_type)
         except MissingRequiredFieldsError as error:
-            self.log_message(f"[red]Missing {error.fields}:[/red] {error.path}")
+            self.log_output(f"[red]Missing {error.fields}:[/red] {error.path}")
+            self.app.notify(f"Missing fields: {error.fields}", severity="error")
             return
         except ExistingReleaseError as error:
-            self.log_message(f"[red]Release already exists:[/red] {error.path}")
+            self.log_output(f"[red]Release already exists:[/red] {error.path}")
+            self.app.notify(f"Release already exists: {error.path}", severity="error")
             return
         except MissingImageError as error:
-            self.log_message(f"[red]Image not found:[/red] {error.path}")
+            self.log_output(f"[red]Image not found:[/red] {error.path}")
+            self.app.notify(f"Image not found: {error.path}", severity="error")
             return
         except Exception as error:
-            self.log_message(f"[red]Release failed:[/red] {error}")
+            self.log_output(f"[red]Release failed:[/red] {error}")
+            self.app.notify(f"Release failed: {error}", severity="error")
             return
 
         if not released:
-            self.log_message(f"No marked {content_type} drafts to release.")
+            self.log_output(f"[dim]No marked {content_type} drafts to release.[/dim]")
+            self.app.notify(f"No marked {content_type} drafts to release.", severity="warning")
         else:
-            self.log_message(f"[green]Released {len(released)} {content_type} draft(s).[/green]")
+            self.log_output(f"[green]Released {len(released)} {content_type} draft(s).[/green]")
             for path in released:
-                self.log_message(f"  {path}")
+                self.log_output(f"  {path}")
+            self.app.notify(f"Released {len(released)} draft(s)", severity="success")
 
         self.refresh_summary()
 
     def publish_selected(self, *, no_git: bool = False, dry_run: bool = False):
         if self.config is None:
-            self.log_message("[red]Cannot publish until configuration loads.[/red]")
+            self.app.notify("Cannot publish until configuration loads.", severity="error")
             return
 
+        self.clear_output()
         content_type = self.selected_content_type()
+        mode = "dry run" if dry_run else ("publish (no git)" if no_git else "publish and push")
+        self.log_output(f"[b]Publishing {content_type} ({mode})...[/b]")
 
         try:
             result = publish_type(
@@ -279,41 +398,50 @@ class MonoPubTuiApp(App):
                 dry_run=dry_run,
             )
         except DirtyPublishRepositoryError as error:
-            self.log_message(f"[red]Publish repository is dirty:[/red] {error.base_dir}")
-            self.log_message(error.status)
+            self.log_output(f"[red]Publish repository is dirty:[/red] {error.base_dir}")
+            self.log_output(error.status)
+            self.app.notify("Publish repository is dirty", severity="error")
             return
         except (GitCommandError, GitRepositoryError, JekyllCommandError) as error:
-            self.log_message(f"[red]{error}[/red]")
+            self.log_output(f"[red]{error}[/red]")
             if error.output:
-                self.log_message(error.output)
+                self.log_output(error.output)
+            self.app.notify(str(error), severity="error")
             return
         except Exception as error:
-            self.log_message(f"[red]Publish failed:[/red] {error}")
+            self.log_output(f"[red]Publish failed:[/red] {error}")
+            self.app.notify(f"Publish failed: {error}", severity="error")
             return
 
         self.report_publish_result(result)
         self.refresh_summary()
 
     def report_publish_result(self, result: PublishResult):
-        self.log_message(
+        from rich.markup import escape as rich_escape
+
+        self.log_output(
             f"[green]Published {len(result.files)} {result.content_type} files "
             f"and {len(result.asset_dirs)} asset directories.[/green]"
         )
 
         for path in result.files:
-            self.log_message(f"  {path}")
+            self.log_output(f"  {rich_escape(str(path))}")
 
         for path in result.asset_dirs:
-            self.log_message(f"  {path}")
+            self.log_output(f"  {rich_escape(str(path))}")
 
         if result.git is not None:
-            self.log_message(result.git.message)
+            self.log_output(f"[dim]{rich_escape(result.git.message)}[/dim]")
 
         if result.jekyll is not None:
-            self.log_message(
-                f"Jekyll server started in {result.jekyll.base_dir} "
-                f"on http://127.0.0.1:{result.jekyll.port}"
+            self.log_output(
+                f"Jekyll server started on http://127.0.0.1:{result.jekyll.port}"
             )
+
+        self.app.notify(
+            f"Published {len(result.files)} file(s)",
+            severity="success",
+        )
 
     def markdown_files(self, group_key: str, path_key: str) -> list[Path]:
         path = Path(self.config[group_key][path_key])
@@ -323,20 +451,15 @@ class MonoPubTuiApp(App):
         value = self.query_one("#content-type", Select).value
         return str(value)
 
-    def log_message(self, message: str):
-        self.write_log(self.query_one("#status", RichLog), message)
-
-    def write_log(self, log: RichLog, message: str):
-        log.write(Text.from_markup(message))
-
 
 def create_draft(config: dict, content_type: str, title: str) -> Path:
-    today = date.today()
+    from datetime import date
+
     slug = slugify(title)
     path_key = PATH_KEYS_BY_TYPE[content_type]
     target_dir = Path(config["drafts_path"][path_key])
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{today.isoformat()}-{slug}.md"
+    target = target_dir / f"{date.today().isoformat()}-{slug}.md"
 
     if target.exists():
         raise FileExistsError(target)
@@ -345,7 +468,7 @@ def create_draft(config: dict, content_type: str, title: str) -> Path:
     template = env.get_template(f"{content_type}.md.j2")
     context = {
         "title": title,
-        "date": today.isoformat(),
+        "date": date.today().isoformat(),
         "author": config["author"],
         "type": content_type,
     }
