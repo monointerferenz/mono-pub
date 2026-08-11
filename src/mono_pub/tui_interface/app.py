@@ -40,14 +40,14 @@ COMMON_CSS = """
 }
 
 .action-button {
-    width: 90%;
+    width: 100%;
     margin-top: 1;
 }
 
 .panel {
     border: solid $accent;
     padding: 1;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 
 .heading-bar {
@@ -125,9 +125,11 @@ class MonoPubTuiApp(App):
     }
 
     Button {
-        width: 90%;
+        width: 25;
         margin-top: 1;
     }
+
+
 
     #draft-title-input {
         width: 100%;
@@ -136,6 +138,7 @@ class MonoPubTuiApp(App):
 
     #content-type-label {
         margin-top: 1;
+        padding-bottom: 1;
     }
     """
 
@@ -161,7 +164,7 @@ class MonoPubTuiApp(App):
                     yield Label("", id="content-type-label")
                     yield Select(CONTENT_TYPES, value="post", id="content-type")
                     yield Input(placeholder="Draft title", id="draft-title")
-                    yield Button("Create draft", id="create-draft", variant="primary")
+                    yield Button("Create draft", id="create-draft", classes="action-button", variant="primary")
                 with VerticalScroll(classes="panel"):
                     yield Label("Actions", classes="section-title")
                     yield Button("Open drafts", id="open")
@@ -204,7 +207,7 @@ class MonoPubTuiApp(App):
         """Append a styled message to the output area."""
         self._output_lines.append(message)
         output = self.compose_output()
-        output.update("\\n".join(self._output_lines))
+        output.update("\n".join(self._output_lines))
         # Auto-scroll to bottom
         output.scroll_end()
 
@@ -214,7 +217,7 @@ class MonoPubTuiApp(App):
 
     def log_overview(self, message: str):
         self._overview_lines.append(message)
-        self.query_one("#overview-content", Static).update("\\n".join(self._overview_lines))
+        self.query_one("#overview-content", Static).update("\n".join(self._overview_lines))
 
     def action_refresh(self):
         self.load_configuration()

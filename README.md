@@ -5,6 +5,8 @@ It offers a command line interface and an optional terminal-based GUI.
 
 It prepares content to be published via Jekyll.
 
+![](doc/interface.png)
+
 ## Installation
 
 ### Requirements

@@ -41,6 +41,8 @@ def _resolve_config_paths(config: dict[str, Any], base_dir: Path) -> dict[str, A
 
     return config
 
+def get_project_root() -> Path:
+    return Path(__file__).parent.parent
 
 def load_config(path: str | None = None) -> dict[str, Any]:
     config_path = _resolve_config_path(path)
@@ -61,7 +63,7 @@ def _resolve_config_path(path: str | None) -> Path:
         return Path(env_path).expanduser().resolve()
 
     # Search working-directory-local config
-    local = Path.cwd() / DEFAULT_CONFIG_FILENAME
+    local = get_project_root().parent / DEFAULT_CONFIG_FILENAME
     if local.exists():
         return local
 
