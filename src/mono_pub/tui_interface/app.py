@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
+from importlib.resources import files
+from mono_pub.tui_interface.ui import CSS_PATH, MONO_THEMES, THEME
+
 import subprocess
 from pathlib import Path
 
@@ -10,6 +14,8 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
+from textual.theme import BUILTIN_THEMES
+
 
 from mono_pub.commands.open import build_editor_command
 from mono_pub.config import load_config
@@ -24,6 +30,7 @@ from mono_pub.process.publish import (
 )
 from mono_pub.process.release import ExistingReleaseError, MissingRequiredFieldsError, release_type
 from mono_pub.process.release_config import PATH_KEYS_BY_TYPE
+
 
 CONTENT_TYPES = (
     ("Post", "post"),
@@ -126,10 +133,10 @@ class MonoPubTuiApp(App):
 
     Button {
         width: 25;
-        margin-top: 1;
+        border: none;
+        height: 3;
+        margin: 1 2 1 1;
     }
-
-
 
     #draft-title-input {
         width: 100%;
@@ -148,7 +155,7 @@ class MonoPubTuiApp(App):
     ]
 
     TITLE = "mono-pub"
-
+    CSS_PATH = str(CSS_PATH)
     def __init__(self):
         super().__init__()
         self.config: dict | None = None
@@ -158,6 +165,15 @@ class MonoPubTuiApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="workspace"):
+            # # Theme selector in sidebar
+            # with Horizontal(id="theme-bar"):
+            #     yield Label("Theme: ", classes="dim-text")
+            #     yield Select(
+            #         [(theme.name.title().replace('-', ' ').title(), theme.name) for _, theme in MONO_THEMES.items()],
+            #         value=THEME.name,
+            #         id="theme-selector",
+            #         classes="action-button",
+            #     )
             with Vertical(id="sidebar"):
                 with Vertical(classes="panel"):
                     yield Label("Content", classes="section-title")
@@ -183,7 +199,10 @@ class MonoPubTuiApp(App):
         yield Footer()
 
     def on_mount(self):
-        self.theme = "gruvbox"
+        # Register all custom themes
+        for theme_name, theme in MONO_THEMES.items():
+            self.register_theme(theme)
+        self.theme = "monobase"
         self.load_configuration()
         self.refresh_summary()
         self.update_content_type_label()
@@ -191,6 +210,9 @@ class MonoPubTuiApp(App):
     def on_select_changed(self, event: Select.Changed):
         if event.select.id == "content-type":
             self.update_content_type_label()
+        elif event.select.id == "theme-selector" and event.value != Select.NULL:
+            self.theme = event.value
+            self.app.notify(f"Theme changed to {self.theme}", severity="information")
 
     def update_content_type_label(self):
         label = self.query_one("#content-type-label", Label)
